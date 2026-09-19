@@ -351,19 +351,58 @@ def test_skip_obsidian_and_trash_dirs(tmp_path: Path):
 
 
 def test_slug_disambiguation(tmp_path: Path):
-    """Two files that map to the same slug get -2 suffix on the second."""
+    """Slug collisions keep distinct destinations and rewrite exact-stem wikilinks correctly."""
     vault = make_vault(tmp_path, {
-        # These both slugify to "my-note" after PARA prefix stripped
-        "Projects/my-note.md": "---\ntitle: My Note A\n---\n\nA.\n",
-        "Projects/My Note.md": "---\ntitle: My Note B\n---\n\nB.\n",
+        "Projects/My Note.md": "---\ntitle: My Note A\n---\n\nA.\n",
+        "Projects/my-note.md": "---\ntitle: My Note B\n---\n\nB.\n",
+        "Projects/linker.md": (
+            "---\ntitle: Linker\n---\n\n"
+            "See [[my-note]] and [[My Note]].\n"
+        ),
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, _ = plan_import(vault, memory, None)
+    plans, warnings = plan_import(vault, memory, None)
 
-    dest_paths = {p.dest_path for p in plans}
-    # Must be two distinct paths
+    note_plans = [
+        p for p in plans
+        if p.source_path.name in {"My Note.md", "my-note.md"}
+    ]
+    dest_paths = {p.dest_path for p in note_plans}
     assert len(dest_paths) == 2, f"Expected 2 distinct dest paths, got: {dest_paths}"
+
+    dest_by_source = {
+        p.source_path.name: p.dest_path.stem
+        for p in note_plans
+    }
+    linker_plan = next(p for p in plans if p.source_path.name == "linker.md")
+    assert (
+        f"See [[{dest_by_source['my-note.md']}]] "
+        f"and [[{dest_by_source['My Note.md']}]]."
+    ) in linker_plan.content
+    assert any("collision" in warning.lower() and "my-note" in warning for warning in warnings)
+
+
+def test_ambiguous_wikilink_left_as_is_and_reported(tmp_path: Path):
+    """A slug-only collision is left untouched instead of resolving by iteration order."""
+    vault = make_vault(tmp_path, {
+        "Projects/My Note.md": "---\ntitle: My Note A\n---\n\nA.\n",
+        "Projects/my-note.md": "---\ntitle: My Note B\n---\n\nB.\n",
+        "Projects/linker.md": (
+            "---\ntitle: Linker\n---\n\n"
+            "See [[MY NOTE]].\n"
+        ),
+    })
+    memory = make_memory_dir(tmp_path)
+
+    plans, warnings = plan_import(vault, memory, None)
+
+    linker_plan = next(p for p in plans if p.source_path.name == "linker.md")
+    assert "[[MY NOTE]]" in linker_plan.content
+    assert any(
+        "ambiguous" in warning.lower() and "[[MY NOTE]]" in warning
+        for warning in warnings
+    )
 
 
 def test_existing_frontmatter_preserved(tmp_path: Path):
