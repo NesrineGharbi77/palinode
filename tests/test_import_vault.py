@@ -158,11 +158,14 @@ def test_wikilink_translation_within_import_set(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, warnings = plan_import(
+    plans, warnings, collision_warnings = plan_import(
         source_vault=vault,
         memory_dir=memory,
         into_category=None,
     )
+
+    assert warnings == []
+    assert collision_warnings == []
 
     # Find the plan for my-project.md
     project_plan = next(p for p in plans if "my-project" in p.source_path.name)
@@ -182,12 +185,13 @@ def test_wikilink_orphan_left_as_is(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, warnings = plan_import(vault, memory, None)
+    plans, warnings, collision_warnings = plan_import(vault, memory, None)
 
     assert len(plans) == 1
     assert "[[Totally Unknown Thing]]" in plans[0].content
     assert len(warnings) == 1
     assert "Totally Unknown Thing" in warnings[0]
+    assert collision_warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +366,7 @@ def test_slug_disambiguation(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, warnings = plan_import(vault, memory, None)
+    plans, orphan_warnings, collision_warnings = plan_import(vault, memory, None)
 
     note_plans = [
         p for p in plans
@@ -380,7 +384,27 @@ def test_slug_disambiguation(tmp_path: Path):
         f"See [[{dest_by_source['my-note.md']}]] "
         f"and [[{dest_by_source['My Note.md']}]]."
     ) in linker_plan.content
-    assert any("collision" in warning.lower() and "my-note" in warning for warning in warnings)
+    assert orphan_warnings == []
+    assert any(
+        "collision" in warning.lower() and "my-note" in warning
+        for warning in collision_warnings
+    )
+
+
+def test_collision_reporting_has_its_own_cli_channel(tmp_path: Path):
+    """Same-slug sources are reported separately even when there are no wikilinks."""
+    vault = make_vault(tmp_path, {
+        "Projects/My Note.md": "---\ntitle: My Note A\n---\n\nA.\n",
+        "Projects/my-note.md": "---\ntitle: My Note B\n---\n\nB.\n",
+    })
+    memory = make_memory_dir(tmp_path)
+
+    result = run_import(vault, memory)
+
+    assert result.exit_code == 0
+    assert "Wikilink target collisions (1):" in result.output
+    assert "Orphaned wikilinks" not in result.output
+    assert "orphan-repair" not in result.output
 
 
 def test_ambiguous_wikilink_left_as_is_and_reported(tmp_path: Path):
@@ -395,13 +419,14 @@ def test_ambiguous_wikilink_left_as_is_and_reported(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, warnings = plan_import(vault, memory, None)
+    plans, orphan_warnings, collision_warnings = plan_import(vault, memory, None)
 
     linker_plan = next(p for p in plans if p.source_path.name == "linker.md")
     assert "[[MY NOTE]]" in linker_plan.content
+    assert orphan_warnings == []
     assert any(
         "ambiguous" in warning.lower() and "[[MY NOTE]]" in warning
-        for warning in warnings
+        for warning in collision_warnings
     )
 
 
@@ -415,7 +440,7 @@ def test_existing_frontmatter_preserved(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, _ = plan_import(vault, memory, None)
+    plans, _, _ = plan_import(vault, memory, None)
     assert len(plans) == 1
 
     post = fm_lib.loads(plans[0].content)
@@ -430,7 +455,7 @@ def test_para_areas_maps_to_decisions(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, _ = plan_import(vault, memory, None)
+    plans, _, _ = plan_import(vault, memory, None)
     assert plans[0].category == "decisions"
 
 
@@ -441,7 +466,7 @@ def test_para_resources_maps_to_research(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, _ = plan_import(vault, memory, None)
+    plans, _, _ = plan_import(vault, memory, None)
     assert plans[0].category == "research"
 
 
@@ -452,7 +477,7 @@ def test_frontmatter_type_field_used_for_category(tmp_path: Path):
     })
     memory = make_memory_dir(tmp_path)
 
-    plans, _ = plan_import(vault, memory, None)
+    plans, _, _ = plan_import(vault, memory, None)
     assert plans[0].category == "insights"
 
 
