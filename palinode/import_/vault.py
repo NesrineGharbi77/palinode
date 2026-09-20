@@ -185,6 +185,7 @@ def _translate_wikilinks(
     exact_stem_index: dict[str, list[str]],
     slug_index: dict[str, list[str]],
     orphan_warnings: list[str],
+    collision_warnings: list[str],
     source_rel: Path,
 ) -> str:
     """Rewrite [[wikilinks]] without collapsing colliding source names.
@@ -206,7 +207,7 @@ def _translate_wikilinks(
         if len(exact_matches) == 1:
             return f"[[{source_destinations[exact_matches[0]]}]]"
         if len(exact_matches) > 1:
-            orphan_warnings.append(
+            collision_warnings.append(
                 f"{source_rel}: wikilink [[{raw}]] is ambiguous between "
                 f"{', '.join(exact_matches)} — leaving as-is"
             )
@@ -217,7 +218,7 @@ def _translate_wikilinks(
         if len(slug_matches) == 1:
             return f"[[{source_destinations[slug_matches[0]]}]]"
         if len(slug_matches) > 1:
-            orphan_warnings.append(
+            collision_warnings.append(
                 f"{source_rel}: wikilink [[{raw}]] is ambiguous for slug "
                 f"'{raw_slug}' between {', '.join(slug_matches)} — leaving as-is"
             )
@@ -268,13 +269,14 @@ def plan_import(
     source_vault: Path,
     memory_dir: Path,
     into_category: Optional[str] = None,
-) -> tuple[list[ImportPlan], list[str]]:
+) -> tuple[list[ImportPlan], list[str], list[str]]:
     """Walk source_vault and build an ImportPlan for each .md file.
 
     Returns:
-        (plans, orphan_warnings) — plans is the list of ImportPlan objects;
-        orphan_warnings is a list of human-readable messages about unresolved
-        wikilinks (populated during wikilink translation on the second pass).
+        (plans, orphan_warnings, collision_warnings) — plans is the list of
+        ImportPlan objects; orphan_warnings contains links with no import target,
+        while collision_warnings contains source-name collisions and ambiguous
+        links that cannot be resolved uniquely.
     """
     # Pass 1: collect all .md files and compute category + dest paths
     plans_pre: list[tuple[Path, Path, dict, str, str, str]] = []
@@ -334,6 +336,7 @@ def plan_import(
     # Pass 2: translate wikilinks and build final ImportPlan objects
     plans: list[ImportPlan] = []
     orphan_warnings: list[str] = []
+    collision_warnings: list[str] = []
 
     # Report name collisions even if every actual link can be resolved by an
     # exact stem. Previously these collisions were silent and iteration order
@@ -344,7 +347,7 @@ def plan_import(
                 f"{key} -> {source_destinations[key]}"
                 for key in source_keys
             )
-            orphan_warnings.append(
+            collision_warnings.append(
                 f"wikilink target collision for slug '{src_slug}': "
                 f"{destinations}; exact-stem links resolve exactly, other "
                 "spellings are ambiguous and left as-is"
@@ -357,6 +360,7 @@ def plan_import(
             exact_stem_index,
             slug_index,
             orphan_warnings,
+            collision_warnings,
             src_rel,
         )
 
@@ -372,7 +376,7 @@ def plan_import(
             content=content,
         ))
 
-    return plans, orphan_warnings
+    return plans, orphan_warnings, collision_warnings
 
 
 def execute_import(
